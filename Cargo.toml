@@ -20,7 +20,7 @@ exclude = [
 name = "rustbox2"
 
 [dependencies.termbox-sys2]
-git = "https://github.com/yymirror/termbox-sys2.git"
+git = "https://github.com/yymirror/termbox2-sys.git"
 
 [dependencies]
 bitflags = "0.2.1"
