@@ -1,6 +1,7 @@
 extern crate gag;
-extern crate num_traits;
-extern crate termbox_sys as termbox;
+extern crate libc;
+extern crate num;
+extern crate termbox_sys2 as termbox;
 #[macro_use] extern crate bitflags;
 
 pub use self::style::{Style, RB_BOLD, RB_UNDERLINE, RB_REVERSE, RB_NORMAL};
@@ -10,12 +11,11 @@ use std::fmt;
 use std::io;
 use std::char;
 use std::default::Default;
-use std::ops::FnOnce;
-use std::sync::Mutex;
+use std::marker::PhantomData;
 
-use num_traits::FromPrimitive;
+use num::FromPrimitive;
 use termbox::RawEvent;
-use std::os::raw::c_int;
+use libc::c_int;
 use gag::Hold;
 use std::time::Duration;
 
@@ -58,6 +58,7 @@ pub enum OutputMode {
     EightBit = 2,  // 256 Colors
     WebSafe = 3,   // 216 Colors
     Grayscale = 4,
+    TrueColor = 5, // 32-Bit Colors
 }
 
 
@@ -71,11 +72,11 @@ pub enum Color {
     Magenta,
     Cyan,
     White,
-    Byte(u16),
+    Byte(u32),
     Default,
 }
 impl Color {
-    pub fn as_256color(&self) -> u16 {
+    pub fn as_256color(&self) -> u32 {
         match *self {
             Color::Black => 0x00,
             Color::Red => 0x01,
@@ -90,7 +91,7 @@ impl Color {
         }
     }
 
-    pub fn as_16color(&self) -> u16 {
+    pub fn as_16color(&self) -> u32 {
         match *self {
             Color::Default => 0x00,
             Color::Black => 0x01,
@@ -104,22 +105,33 @@ impl Color {
             Color::Byte(b) => panic!("Attempted to cast color byte {} to 16 color mode", b),
         }
     }
-}
 
-impl Default for Color {
-    fn default() -> Color {
-        Color::Black
+    pub fn as_rgbcolor(&self) -> u32 {
+        match *self {
+            Color::Black => 0x000000,
+            Color::Red => 0xFF0000,
+            Color::Green => 0x00FF00,
+            Color::Yellow => 0xFFFF00,
+            Color::Blue => 0x0000FF,
+            Color::Magenta => 0xFF00FF,
+            Color::Cyan => 0x00FFFF,
+            Color::White => 0xFFFFFF,
+            Color::Byte(b) => b,
+            Color::Default => panic!("Attempted to cast default color to rgb-bytes"),
+        }
     }
 }
 
 mod style {
     bitflags! {
         #[repr(C)]
-        flags Style: u16 {
+        flags Style: u32 {
             const TB_NORMAL_COLOR = 0x000F,
             const RB_BOLD = 0x0100,
             const RB_UNDERLINE = 0x0200,
             const RB_REVERSE = 0x0400,
+            const RB_ITALIC = 0x0800,
+            const RB_BLINK = 0x1000,
             const RB_NORMAL = 0x0000,
             const TB_ATTRIB = RB_BOLD.bits | RB_UNDERLINE.bits | RB_REVERSE.bits,
         }
@@ -132,6 +144,10 @@ mod style {
 
         pub fn from_256color(color: super::Color) -> Style {
             Style { bits: color.as_256color() }
+        }
+
+        pub fn from_rgbcolor(color: super::Color) -> Style {
+            Style { bits: color.as_rgbcolor() }
         }
     }
 }
@@ -272,23 +288,11 @@ pub struct RustBox {
     // Note that running *MUST* be the last field in the destructor, since destructors run in
     // top-down order. Otherwise it will not properly protect the above fields.
     _running: running::RunningGuard,
+    // Termbox is not thread safe. See #39.
+    _phantom: PhantomData<*mut ()>,
 
     // Store this so we know which colours to use
     output_mode: OutputMode,
-
-    // Used/obtained by methods that read from the terminal (or termbox's
-    // internal state). Termbox is only thread safe to the extent that one
-    // thread can read while another writes; this lock prevents overlapping
-    // reads.
-    // See https://github.com/nsf/termbox/commit/493dc1395c91174e97658ff15fa2380227faf28f
-    input_lock: Mutex<()>,
-
-    // Used/obtained by methods that write to the terminal (or termbox's
-    // internal state). Termbox is only thread safe to the extent that one
-    // thread can read while another writes; this lock prevents overlapping
-    // writes.
-    // See https://github.com/nsf/termbox/commit/493dc1395c91174e97658ff15fa2380227faf28f
-    output_lock: Mutex<()>,
 }
 
 #[derive(Clone, Copy,Debug)]
@@ -397,9 +401,8 @@ impl RustBox {
             0 => RustBox {
                 _stderr: stderr,
                 _running: running,
+                _phantom: PhantomData,
                 output_mode: OutputMode::Current,
-                input_lock: Mutex::new(()),
-                output_lock: Mutex::new(()),
             },
             res => {
                 return Err(FromPrimitive::from_isize(res as isize).unwrap())
@@ -418,46 +421,40 @@ impl RustBox {
     }
 
     pub fn width(&self) -> usize {
-        let _lock = self.output_lock.lock();
-
         unsafe { termbox::tb_width() as usize }
     }
 
     pub fn height(&self) -> usize {
-        let _lock = self.output_lock.lock();
-
         unsafe { termbox::tb_height() as usize }
     }
 
     pub fn clear(&self) {
-        let _lock = self.output_lock.lock();
-
         unsafe { termbox::tb_clear() }
     }
 
     pub fn present(&self) {
-        let _lock = self.output_lock.lock();
-
         unsafe { termbox::tb_present() }
     }
 
     pub fn set_cursor(&self, x: isize, y: isize) {
-        let _lock = self.output_lock.lock();
-
         unsafe { termbox::tb_set_cursor(x as c_int, y as c_int) }
     }
 
-    pub unsafe fn change_cell(&self, x: usize, y: usize, ch: u32, fg: u16, bg: u16) {
+    pub unsafe fn change_cell(&self, x: usize, y: usize, ch: u32, fg: u32, bg: u32) {
         termbox::tb_change_cell(x as c_int, y as c_int, ch, fg, bg)
     }
 
     pub fn print(&self, x: usize, y: usize, sty: Style, fg: Color, bg: Color, s: &str) {
-        let _lock = self.output_lock.lock();
-
-        let fg_int;
-        let bg_int;
+        let fg_int: u32;
+        let bg_int: u32;
 
         match self.output_mode {
+            // truecolor mode
+            OutputMode::TrueColor => {
+                fg_int = Style::from_rgbcolor(fg) | (sty & style::TB_ATTRIB);
+                bg_int = Style::from_rgbcolor(bg);
+            },
+
             // 256 color mode
             OutputMode::EightBit => {
                 fg_int = Style::from_256color(fg) | (sty & style::TB_ATTRIB);
@@ -479,12 +476,16 @@ impl RustBox {
     }
 
     pub fn print_char(&self, x: usize, y: usize, sty: Style, fg: Color, bg: Color, ch: char) {
-        let _lock = self.output_lock.lock();
-
-        let fg_int;
-        let bg_int;
+        let fg_int: u32;
+        let bg_int: u32;
 
         match self.output_mode {
+            // truecolor mode
+            OutputMode::TrueColor => {
+                fg_int = Style::from_rgbcolor(fg) | (sty & style::TB_ATTRIB);
+                bg_int = Style::from_rgbcolor(bg);
+            },
+
             // 256 color mode
             OutputMode::EightBit => {
                 fg_int = Style::from_256color(fg) | (sty & style::TB_ATTRIB);
@@ -497,13 +498,13 @@ impl RustBox {
                 bg_int = Style::from_color(bg);
             }
         }
+
         unsafe {
             self.change_cell(x, y, ch as u32, fg_int.bits(), bg_int.bits());
         }
     }
 
     pub fn poll_event(&self, raw: bool) -> EventResult {
-        let _lock = self.input_lock.lock();
         let mut ev = NIL_RAW_EVENT;
         let rc = unsafe {
             termbox::tb_poll_event(&mut ev)
@@ -512,7 +513,6 @@ impl RustBox {
     }
 
     pub fn peek_event(&self, timeout: Duration, raw: bool) -> EventResult {
-        let _lock = self.input_lock.lock();
         let mut ev = NIL_RAW_EVENT;
         let rc = unsafe {
             termbox::tb_peek_event(&mut ev, (timeout.as_secs() * 1000 + timeout.subsec_nanos() as u64 / 1000000) as c_int)
@@ -521,16 +521,12 @@ impl RustBox {
     }
 
     pub fn set_input_mode(&self, mode: InputMode) {
-        let _lock = self.output_lock.lock();
-
         unsafe {
             termbox::tb_select_input_mode(mode as c_int);
         }
     }
 
     pub fn set_output_mode(&mut self, mode: OutputMode) {
-        let _lock = self.output_lock.lock();
-
         self.output_mode = mode;
 
         unsafe {
@@ -538,27 +534,6 @@ impl RustBox {
         }
     }
 
-    /// Convenience method to lock all (both input/output) access to
-    /// Rustbox, shutdown termbox itself, and then defer to the caller (via F,
-    /// while access is still locked). Once F completes, termbox is started and
-    /// the locks are released.
-    pub fn suspend<F>(&self, func: F)
-        where F: FnOnce() -> ()
-    {
-        // Lock I/O until we've resumed.
-        let _input_lock = self.input_lock.lock();
-        let _output_lock = self.output_lock.lock();
-
-        unsafe {
-            termbox::tb_shutdown();
-        }
-
-        func();
-
-        unsafe {
-            termbox::tb_init();
-        }
-    }
 }
 
 impl Drop for RustBox {
