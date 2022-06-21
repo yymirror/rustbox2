@@ -1,14 +1,14 @@
 [package]
-name = "rustbox"
-version = "0.11.0"
+name = "rustbox2"
+version = "0.0.1"
 authors = ["Greg Chapple <gregchapple1@gmail.com>"]
-description = "A rust implementation of the termbox library"
-repository = "https://github.com/gchp/rustbox"
-homepage = "https://github.com/gchp/rustbox"
+description = "A rust implementation of the termbox2 library"
+repository = "https://github.com/yymirror/rustbox2"
+homepage = "https://github.com/yymirror/rustbox2"
 readme = "README.md"
 license = "MIT"
 keywords = [
-    "termbox",
+    "termbox2",
     "terminal",
     "gui",
 ]
@@ -17,10 +17,13 @@ exclude = [
 ]
 
 [lib]
-name = "rustbox"
+name = "rustbox2"
+
+[dependencies.termbox-sys2]
+git = "https://github.com/yymirror/termbox-sys2.git"
 
 [dependencies]
 bitflags = "0.2.1"
-termbox-sys = "0.2.9"
 gag = "0.1.6"
-num-traits = "0.1.13"
+num = "0.1.13"
+libc = "0.1.10"
